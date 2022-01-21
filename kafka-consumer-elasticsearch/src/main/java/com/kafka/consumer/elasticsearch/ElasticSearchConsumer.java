@@ -47,7 +47,7 @@ public class ElasticSearchConsumer {
 			for (ConsumerRecord<String, String> record : records) {
 				IndexRequest indexRequest;
 				try {
-					indexRequest = new IndexRequest("PUT", "twitter/tweets", extractIdFromJson(record))
+					indexRequest = new IndexRequest("twitter", "tweets", extractIdFromJson(record))
 					.source(record.value(), XContentType.JSON);
 					
 					bulkRequest.add(indexRequest);
@@ -57,7 +57,7 @@ public class ElasticSearchConsumer {
 			}
 			if (records.count() > 0) {
 				BulkResponse response = executeRequest(client, bulkRequest);
-				logger.info("Took " + response.getTook().getSeconds() + " secs to process batch");
+				logger.info("Took " + response.getTook().getSeconds() + " secs or " +response.getTook().millis() + " m/secs to process batch");
 
 				logger.info("Committing offsets");
 				consumer.commitSync();
