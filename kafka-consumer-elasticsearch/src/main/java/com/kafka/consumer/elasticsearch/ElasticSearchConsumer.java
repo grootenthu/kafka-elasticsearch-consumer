@@ -11,16 +11,19 @@ import org.apache.http.auth.UsernamePasswordCredentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.nio.client.HttpAsyncClientBuilder;
-import org.apache.http.util.EntityUtils;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
-import org.elasticsearch.client.Request;
-import org.elasticsearch.client.Response;
+import org.elasticsearch.action.bulk.BulkRequest;
+import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.index.IndexRequest;
+import org.elasticsearch.client.RequestOptions;
 import org.elasticsearch.client.RestClient;
 import org.elasticsearch.client.RestClientBuilder;
+import org.elasticsearch.client.RestHighLevelClient;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,7 +34,7 @@ public class ElasticSearchConsumer {
 	public static void main(String[] args) throws IOException {
 		final Logger logger = LoggerFactory.getLogger(ElasticSearchConsumer.class);
 		logger.info("Start Twitter & Elastic Search Integration");
-		RestClient client = createClient();
+		RestHighLevelClient client = createClient();
 		KafkaConsumer<String, String> consumer = createKafkaConsumer("twitter_tweets");
 
 		// poll for new data
@@ -39,49 +42,55 @@ public class ElasticSearchConsumer {
 			ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
 
 			logger.info("Received a batch of : " + records.count() + " records");
+			
+			BulkRequest bulkRequest = new BulkRequest();
 			for (ConsumerRecord<String, String> record : records) {
-				Response response = executeRequest(client, record);
-				logger.info(EntityUtils.toString(response.getEntity()));
+				IndexRequest indexRequest;
+				try {
+					indexRequest = new IndexRequest("PUT", "twitter/tweets", extractIdFromJson(record))
+					.source(record.value(), XContentType.JSON);
+					
+					bulkRequest.add(indexRequest);
+				} catch (NullPointerException e) {
+					logger.warn("Skipping bad data : " + record.value());
+				}
+			}
+			if (records.count() > 0) {
+				BulkResponse response = executeRequest(client, bulkRequest);
+				logger.info("Took " + response.getTook().getSeconds() + " secs to process batch");
 
+				logger.info("Committing offsets");
+				consumer.commitSync();
+				logger.info("Offsets have been committed");
 				try {
 					Thread.sleep(10);
 				} catch (InterruptedException e) {
 					e.printStackTrace();
 				}
 			}
-			
-			logger.info("Committing offsets");
-			consumer.commitSync();
-			logger.info("Offsets have been committed");
-			try {
-				Thread.sleep(1000);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
 		}
 
 		// client.close();
 	}
 
-	private static Response executeRequest(RestClient client, ConsumerRecord<String, String> record)
+	private static BulkResponse executeRequest(RestHighLevelClient client, BulkRequest bulkRequest)
 			throws IOException {
 		
-		//There can 2 strategies to make any consumer idempotent
-		//1 -> Use kafka generic ID
-		//String id = record.topic()+record.partition()+record.offset();
-		
-		//2 -> Use twitter / API specific ID
-		//we use option 2 which is as follows
+		return client.bulk(bulkRequest, RequestOptions.DEFAULT);
+	}
+
+	private static String extractIdFromJson(ConsumerRecord<String, String> record) {
+		// There can 2 strategies to make any consumer idempotent
+		// 1 -> Use kafka generic ID
+		// String id = record.topic()+record.partition()+record.offset();
+
+		// 2 -> Use twitter / API specific ID
+		// we use option 2 which is as follows
 		String id = JsonParser.parseString(record.value())
 							  .getAsJsonObject()
 							  .get("id_str")
 							  .getAsString();
-
-		Request request = new Request("PUT", "/twitter/tweets/" + id);
-
-		request.setJsonEntity(record.value());
-		Response response = client.performRequest(request);
-		return response;
+		return id;
 	}
 
 	private static KafkaConsumer<String, String> createKafkaConsumer(String topicName) {
@@ -110,19 +119,23 @@ public class ElasticSearchConsumer {
 		return consumer;
 	}
 
-	public static RestClient createClient() {
+	public static RestHighLevelClient createClient() {
 
 		final CredentialsProvider credentialsProvider = new BasicCredentialsProvider();
 		credentialsProvider.setCredentials(AuthScope.ANY, new UsernamePasswordCredentials("1cv9ii5few", "m09dlhmfta"));
 
-		return RestClient
+		RestClientBuilder builder = RestClient
 				.builder(new HttpHost("kafka-twitter-6047828393.ap-southeast-2.bonsaisearch.net", 443, "https"))
 				.setHttpClientConfigCallback(new RestClientBuilder.HttpClientConfigCallback() {
 					@Override
 					public HttpAsyncClientBuilder customizeHttpClient(HttpAsyncClientBuilder httpClientBuilder) {
 						return httpClientBuilder.setDefaultCredentialsProvider(credentialsProvider);
 					}
-				}).build();
+				});
+		
+		RestHighLevelClient client = new RestHighLevelClient(builder);
+		
+		return client;
 	}
 
 }
