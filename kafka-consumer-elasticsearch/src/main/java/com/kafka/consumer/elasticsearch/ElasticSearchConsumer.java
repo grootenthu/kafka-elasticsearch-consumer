@@ -24,6 +24,8 @@ import org.elasticsearch.client.RestClientBuilder;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.google.gson.JsonParser;
+
 public class ElasticSearchConsumer {
 
 	public static void main(String[] args) throws IOException {
@@ -36,15 +38,25 @@ public class ElasticSearchConsumer {
 		while (true) {
 			ConsumerRecords<String, String> records = consumer.poll(Duration.ofMillis(100));
 
+			logger.info("Received a batch of : " + records.count() + " records");
 			for (ConsumerRecord<String, String> record : records) {
 				Response response = executeRequest(client, record);
 				logger.info(EntityUtils.toString(response.getEntity()));
 
 				try {
-					Thread.sleep(1000);
+					Thread.sleep(10);
 				} catch (InterruptedException e) {
 					e.printStackTrace();
 				}
+			}
+			
+			logger.info("Committing offsets");
+			consumer.commitSync();
+			logger.info("Offsets have been committed");
+			try {
+				Thread.sleep(1000);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
 			}
 		}
 
@@ -53,7 +65,19 @@ public class ElasticSearchConsumer {
 
 	private static Response executeRequest(RestClient client, ConsumerRecord<String, String> record)
 			throws IOException {
-		Request request = new Request("POST", "/twitter/tweets");
+		
+		//There can 2 strategies to make any consumer idempotent
+		//1 -> Use kafka generic ID
+		//String id = record.topic()+record.partition()+record.offset();
+		
+		//2 -> Use twitter / API specific ID
+		//we use option 2 which is as follows
+		String id = JsonParser.parseString(record.value())
+							  .getAsJsonObject()
+							  .get("id_str")
+							  .getAsString();
+
+		Request request = new Request("PUT", "/twitter/tweets/" + id);
 
 		request.setJsonEntity(record.value());
 		Response response = client.performRequest(request);
@@ -71,7 +95,12 @@ public class ElasticSearchConsumer {
 		properties.setProperty(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
 		properties.setProperty(ConsumerConfig.GROUP_ID_CONFIG, groupId);
 		properties.setProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-
+		
+		
+		//Building capability for commiting offsets manually
+		properties.setProperty(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+		properties.setProperty(ConsumerConfig.MAX_POLL_RECORDS_CONFIG, "10");
+		
 		// create consumer
 		KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties);
 
